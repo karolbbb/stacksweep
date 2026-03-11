@@ -70,7 +70,7 @@ class GameScene: SKScene {
     private var sweepAvailable = true
     private var sweepSelecting = false
     private var isGameOver = false
-    private var isPaused = false
+    private var isShowingQuitPrompt = false
 
     // Endless mode: difficulty ramps every 3 clears
     private var endlessJunkChance: Double = 0.20
@@ -115,7 +115,7 @@ class GameScene: SKScene {
     }
 
     override func update(_ currentTime: TimeInterval) {
-        guard !isGameOver, !isPaused else {
+        guard !isGameOver, !isShowingQuitPrompt else {
             lastUpdateTime = currentTime
             return
         }
@@ -425,7 +425,7 @@ class GameScene: SKScene {
         let tapped = nodes(at: location)
 
         // Handle pause overlay buttons
-        if isPaused {
+        if isShowingQuitPrompt {
             if tapped.contains(where: { $0.name == "quitConfirm" }) {
                 goToMenu()
             } else if tapped.contains(where: { $0.name == "cancelQuit" }) {
@@ -726,7 +726,7 @@ class GameScene: SKScene {
     // MARK: - Pause / Forfeit
 
     private func showPauseOverlay() {
-        isPaused = true
+        isShowingQuitPrompt = true
 
         let overlay = SKNode()
         overlay.name = "pauseOverlay"
@@ -792,7 +792,7 @@ class GameScene: SKScene {
     private func dismissPauseOverlay() {
         pauseOverlay?.removeFromParent()
         pauseOverlay = nil
-        isPaused = false
+        isShowingQuitPrompt = false
     }
 
     private func goToMenu() {
