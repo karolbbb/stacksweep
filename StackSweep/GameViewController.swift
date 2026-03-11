@@ -7,7 +7,6 @@
 
 import UIKit
 import SpriteKit
-import GameplayKit
 
 class GameViewController: UIViewController {
 
@@ -15,23 +14,18 @@ class GameViewController: UIViewController {
 
     override func viewDidLoad() {
         super.viewDidLoad()
-        guard let view = self.view as? SKView else { return }
-        view.ignoresSiblingOrder = true
-        view.showsFPS = true
-        view.showsNodeCount = true
+        guard let skView = self.view as? SKView else { return }
+        skView.ignoresSiblingOrder = true
     }
 
     override func viewDidLayoutSubviews() {
         super.viewDidLayoutSubviews()
-        guard !scenePresented, let view = self.view as? SKView else { return }
-        // Use actual view size; fallback if layout not yet applied
-        var sceneSize = view.bounds.size
-        if sceneSize.width <= 0 || sceneSize.height <= 0 {
-            sceneSize = CGSize(width: 375, height: 667)
-        }
-        let scene = GameScene(size: sceneSize)
-        scene.scaleMode = .aspectFill
-        view.presentScene(scene)
+        guard !scenePresented, let skView = self.view as? SKView else { return }
+
+        let sceneSize = skView.bounds.size
+        let menu = MenuScene(size: sceneSize)
+        menu.scaleMode = .aspectFill
+        skView.presentScene(menu)
         scenePresented = true
     }
 
@@ -43,7 +37,5 @@ class GameViewController: UIViewController {
         }
     }
 
-    override var prefersStatusBarHidden: Bool {
-        return true
-    }
+    override var prefersStatusBarHidden: Bool { true }
 }
