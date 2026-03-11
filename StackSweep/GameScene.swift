@@ -255,15 +255,31 @@ class GameScene: SKScene {
     }
 
     private func cellFromTouch(_ location: CGPoint) -> (row: Int, col: Int)? {
+        // Check hit nodes and their parents (border child → tile parent)
         for node in nodes(at: location) {
-            if node.name == "tile",
-               let data = node.userData,
+            let candidate = node.name == "tile" ? node : node.parent
+            if let tile = candidate,
+               tile.name == "tile",
+               let data = tile.userData,
                let row = data["row"] as? Int,
                let col = data["col"] as? Int,
                row >= 0, row < gridRows, col >= 0, col < gridCols {
                 return (row, col)
             }
         }
+
+        // Coordinate-math fallback for when hit-testing misses clear sprites
+        let col = Int(round((location.x - boardOrigin.x) / (cellSize + cellGap)))
+        let row = Int(round((location.y - boardOrigin.y) / (cellSize + cellGap)))
+        if row >= 0, row < gridRows, col >= 0, col < gridCols {
+            let tilePos = positionFor(row: row, col: col)
+            let dx = abs(location.x - tilePos.x)
+            let dy = abs(location.y - tilePos.y)
+            if dx <= cellSize / 2, dy <= cellSize / 2 {
+                return (row, col)
+            }
+        }
+
         return nil
     }
 
