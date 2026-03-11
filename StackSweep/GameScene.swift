@@ -106,6 +106,8 @@ class GameScene: SKScene {
         let tile = SKSpriteNode(color: .clear, size: CGSize(width: cellSize, height: cellSize))
         tile.position = positionForCell(row: row, column: column)
         tile.zPosition = 0
+        tile.name = "tile"
+        tile.userData = NSMutableDictionary(dictionary: ["row": row, "col": column])
 
         // Draw faint border so the grid is visible when cells are empty.
         let border = SKShapeNode(rectOf: CGSize(width: cellSize, height: cellSize))
@@ -182,12 +184,27 @@ class GameScene: SKScene {
             return
         }
 
-        // Normal gameplay: tap on a cell.
-        if let (row, col) = cellAt(position: location) {
+        // Normal gameplay: tap on a cell. Use node hit-test for reliable touch detection.
+        if let (row, col) = cellFromTouch(at: location) {
             if board[row][col] == .empty {
                 placeBlock(row: row, column: col)
             }
         }
+    }
+
+    /// Resolves tapped cell via node hit-test (more reliable than coordinate math).
+    private func cellFromTouch(at location: CGPoint) -> (row: Int, column: Int)? {
+        let nodesAtPoint = self.nodes(at: location)
+        for node in nodesAtPoint {
+            if node.name == "tile",
+               let tile = node as? SKSpriteNode,
+               let row = tile.userData?["row"] as? Int,
+               let col = tile.userData?["col"] as? Int,
+               row >= 0, row < rows, col >= 0, col < columns {
+                return (row, col)
+            }
+        }
+        return cellAt(position: location)
     }
 
     // MARK: - Game Logic

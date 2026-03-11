@@ -11,20 +11,28 @@ import GameplayKit
 
 class GameViewController: UIViewController {
 
+    private var scenePresented = false
+
     override func viewDidLoad() {
         super.viewDidLoad()
-        
-        if let view = self.view as? SKView {
-            // Create GameScene programmatically with the view's size
-            let scene = GameScene(size: view.bounds.size)
-            scene.scaleMode = .aspectFill
-            view.presentScene(scene)
-            
-            view.ignoresSiblingOrder = true
-            
-            view.showsFPS = true
-            view.showsNodeCount = true
+        guard let view = self.view as? SKView else { return }
+        view.ignoresSiblingOrder = true
+        view.showsFPS = true
+        view.showsNodeCount = true
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard !scenePresented, let view = self.view as? SKView else { return }
+        // Use actual view size; fallback if layout not yet applied
+        var sceneSize = view.bounds.size
+        if sceneSize.width <= 0 || sceneSize.height <= 0 {
+            sceneSize = CGSize(width: 375, height: 667)
         }
+        let scene = GameScene(size: sceneSize)
+        scene.scaleMode = .aspectFill
+        view.presentScene(scene)
+        scenePresented = true
     }
 
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
