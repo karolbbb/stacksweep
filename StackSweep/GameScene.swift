@@ -357,7 +357,12 @@ class GameScene: SKScene {
     // MARK: - Selection
 
     private func showSelection(row: Int, col: Int) {
-        removeSelection()
+        // Remove old indicator visual without clearing selectedCell
+        selectionIndicator?.removeFromParent()
+        selectionIndicator = nil
+
+        selectedCell = (row, col)
+
         let indicator = SKShapeNode(rectOf: CGSize(width: cellSize + 4, height: cellSize + 4), cornerRadius: 6)
         indicator.strokeColor = .white
         indicator.lineWidth = 2.5
@@ -433,7 +438,6 @@ class GameScene: SKScene {
 
             // Tap another block → re-select
             if case .block = board[row][col] {
-                selectedCell = (row, col)
                 showSelection(row: row, col: col)
                 return
             }
@@ -441,7 +445,6 @@ class GameScene: SKScene {
             removeSelection()
         } else {
             if case .block = board[row][col] {
-                selectedCell = (row, col)
                 showSelection(row: row, col: col)
             }
         }
