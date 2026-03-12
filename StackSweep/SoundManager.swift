@@ -2,14 +2,13 @@
 //  SoundManager.swift
 //  StackSweep
 //
-//  Created by Karol Bokszczanin on 11/03/2026.
-//
 
 import AVFoundation
 import UIKit
 
 enum GameSound {
     case select, move, clear, sweep, gameOver, levelComplete
+    case coin, powerUp, bomb, freeze, streak, star, bigCombo, purchase
 }
 
 final class SoundManager {
@@ -21,7 +20,6 @@ final class SoundManager {
     private let sampleRate: Double = 44100
     private let format: AVAudioFormat
 
-    // Haptic generators (pre-warmed for responsiveness)
     private let lightImpact = UIImpactFeedbackGenerator(style: .light)
     private let mediumImpact = UIImpactFeedbackGenerator(style: .medium)
     private let heavyImpact = UIImpactFeedbackGenerator(style: .heavy)
@@ -61,6 +59,14 @@ final class SoundManager {
         case .sweep:         heavyImpact.impactOccurred()
         case .levelComplete: notificationFeedback.notificationOccurred(.success)
         case .gameOver:      notificationFeedback.notificationOccurred(.error)
+        case .coin:          lightImpact.impactOccurred(intensity: 0.5)
+        case .powerUp:       mediumImpact.impactOccurred()
+        case .bomb:          heavyImpact.impactOccurred()
+        case .freeze:        mediumImpact.impactOccurred(intensity: 0.6)
+        case .streak:        notificationFeedback.notificationOccurred(.success)
+        case .star:          lightImpact.impactOccurred()
+        case .bigCombo:      rigidImpact.impactOccurred()
+        case .purchase:      notificationFeedback.notificationOccurred(.success)
         }
     }
 
@@ -74,10 +80,17 @@ final class SoundManager {
         case .sweep:         return sweepTone(startFreq: 800, endFreq: 200, duration: 0.3, volume: 0.2)
         case .gameOver:      return sweepTone(startFreq: 400, endFreq: 100, duration: 0.4, volume: 0.2)
         case .levelComplete: return arpeggio(frequencies: [262, 330, 392, 523], noteDuration: 0.1, volume: 0.18)
+        case .coin:          return arpeggio(frequencies: [800, 1200], noteDuration: 0.04, volume: 0.12)
+        case .powerUp:       return sweepTone(startFreq: 300, endFreq: 900, duration: 0.15, volume: 0.16)
+        case .bomb:          return sweepTone(startFreq: 150, endFreq: 40, duration: 0.35, volume: 0.22)
+        case .freeze:        return arpeggio(frequencies: [1000, 1200, 1400], noteDuration: 0.06, volume: 0.1)
+        case .streak:        return arpeggio(frequencies: [330, 440, 550, 660], noteDuration: 0.08, volume: 0.15)
+        case .star:          return arpeggio(frequencies: [523, 659, 784], noteDuration: 0.07, volume: 0.14)
+        case .bigCombo:      return sweepTone(startFreq: 200, endFreq: 1200, duration: 0.25, volume: 0.2)
+        case .purchase:      return arpeggio(frequencies: [400, 500, 600, 800], noteDuration: 0.06, volume: 0.15)
         }
     }
 
-    /// Square wave at a fixed frequency.
     private func squareWave(frequency: Double, duration: Double, volume: Float) -> AVAudioPCMBuffer? {
         let frameCount = AVAudioFrameCount(sampleRate * duration)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return nil }
@@ -92,7 +105,6 @@ final class SoundManager {
         return buffer
     }
 
-    /// Frequency sweep (ascending or descending).
     private func sweepTone(startFreq: Double, endFreq: Double, duration: Double, volume: Float) -> AVAudioPCMBuffer? {
         let frameCount = AVAudioFrameCount(sampleRate * duration)
         guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frameCount) else { return nil }
@@ -110,7 +122,6 @@ final class SoundManager {
         return buffer
     }
 
-    /// Quick arpeggio of multiple notes in sequence.
     private func arpeggio(frequencies: [Double], noteDuration: Double, volume: Float) -> AVAudioPCMBuffer? {
         let totalDuration = noteDuration * Double(frequencies.count)
         let frameCount = AVAudioFrameCount(sampleRate * totalDuration)
@@ -131,7 +142,6 @@ final class SoundManager {
         return buffer
     }
 
-    /// Short fade-in/out to avoid clicks.
     private func applyFade(_ data: UnsafeMutablePointer<Float>, frameCount: Int) {
         let fadeFrames = min(200, frameCount / 4)
         for i in 0..<fadeFrames {

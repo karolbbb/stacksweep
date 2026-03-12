@@ -12,16 +12,14 @@ import SpriteKit
 enum BlockColor: Int, CaseIterable {
     case red, blue, green, yellow
 
-    var skColor: SKColor {
-        switch self {
-        case .red:    return SKColor(red: 0.95, green: 0.3, blue: 0.35, alpha: 1)
-        case .blue:   return SKColor(red: 0.3, green: 0.75, blue: 0.95, alpha: 1)
-        case .green:  return SKColor(red: 0.35, green: 0.9, blue: 0.5, alpha: 1)
-        case .yellow: return SKColor(red: 0.95, green: 0.8, blue: 0.25, alpha: 1)
-        }
+    func skColor(theme: ThemePack) -> SKColor {
+        let idx = min(rawValue, theme.blockColors.count - 1)
+        return theme.blockColors[idx]
     }
 
-    var glowColor: SKColor { skColor.withAlphaComponent(0.5) }
+    func glowColor(theme: ThemePack) -> SKColor {
+        skColor(theme: theme).withAlphaComponent(theme.blockGlowAlpha)
+    }
 
     static func random(from count: Int) -> BlockColor {
         let available = Array(allCases.prefix(max(1, min(count, allCases.count))))
@@ -49,11 +47,11 @@ class GameScene: SKScene {
     private let gridCols = 6
     private let cellSize: CGFloat = 48
     private let cellGap: CGFloat = 4
-    private let junkColor = SKColor(red: 0.28, green: 0.25, blue: 0.35, alpha: 1)
 
     // MARK: - Config
 
     private let config: LevelConfig
+    private let theme: ThemePack
 
     // MARK: - State
 
@@ -63,7 +61,9 @@ class GameScene: SKScene {
 
     private var score = 0
     private var combo = 1
+    private var maxCombo = 1
     private var linesCleared = 0
+    private var coinsEarned = 0
     private var timeRemaining: TimeInterval = 90
     private var lastUpdateTime: TimeInterval = 0
     private var selectedCell: (row: Int, col: Int)?
@@ -71,10 +71,14 @@ class GameScene: SKScene {
     private var sweepSelecting = false
     private var isGameOver = false
     private var isShowingQuitPrompt = false
+    private var isFrozen = false
+    private var freezeTimeLeft: TimeInterval = 0
 
-    // Endless mode: difficulty ramps every 3 clears
     private var endlessJunkChance: Double = 0.20
     private var endlessColorCount: Int = 4
+
+    // Power-up targeting
+    private var activePowerUp: PowerUpType?
 
     // MARK: - UI Nodes
 
@@ -83,27 +87,32 @@ class GameScene: SKScene {
     private var timerLabel: SKLabelNode!
     private var levelLabel: SKLabelNode!
     private var linesLabel: SKLabelNode!
+    private var coinLabel: SKLabelNode!
     private var sweepButton: SKNode!
     private var selectionIndicator: SKShapeNode?
     private var boardContainer: SKNode!
     private var pauseOverlay: SKNode?
+    private var powerUpBar: SKNode!
+    private var freezeOverlay: SKShapeNode?
 
     // MARK: - Init
 
     init(size: CGSize, config: LevelConfig) {
         self.config = config
+        self.theme = ThemePack.current()
         super.init(size: size)
     }
 
     required init?(coder aDecoder: NSCoder) {
         self.config = .endless
+        self.theme = ThemePack.current()
         super.init(coder: aDecoder)
     }
 
     // MARK: - Lifecycle
 
     override func didMove(to view: SKView) {
-        backgroundColor = SKColor(red: 0.08, green: 0.06, blue: 0.14, alpha: 1)
+        backgroundColor = theme.backgroundColor
         timeRemaining = config.roundDuration
         endlessJunkChance = config.junkSpawnChance
         endlessColorCount = config.colorCount
@@ -111,6 +120,7 @@ class GameScene: SKScene {
         setupScanlines()
         setupBoard()
         setupHUD()
+        setupPowerUpBar()
         populateInitialBoard()
     }
 
@@ -121,18 +131,30 @@ class GameScene: SKScene {
         }
         if lastUpdateTime > 0 {
             let dt = currentTime - lastUpdateTime
-            timeRemaining -= dt
-            if timeRemaining <= 0 {
-                timeRemaining = 0
-                endGame(completed: false)
+
+            // Freeze countdown
+            if isFrozen {
+                freezeTimeLeft -= dt
+                if freezeTimeLeft <= 0 {
+                    endFreeze()
+                }
+            } else {
+                timeRemaining -= dt
+                if timeRemaining <= 0 {
+                    timeRemaining = 0
+                    endGame(completed: false)
+                }
             }
         }
         lastUpdateTime = currentTime
         timerLabel.text = formatTime(timeRemaining)
 
-        // Flash timer red in last 10 seconds
-        if timeRemaining <= 10 {
+        if isFrozen {
+            timerLabel.fontColor = SKColor(red: 0.3, green: 0.7, blue: 1.0, alpha: 1)
+        } else if timeRemaining <= 10 {
             timerLabel.fontColor = SKColor(red: 1, green: 0.3, blue: 0.3, alpha: 1)
+        } else {
+            timerLabel.fontColor = .white
         }
     }
 
@@ -142,7 +164,7 @@ class GameScene: SKScene {
         for y in stride(from: 0, to: size.height, by: 3) {
             let line = SKShapeNode(rectOf: CGSize(width: size.width, height: 1))
             line.position = CGPoint(x: size.width / 2, y: y)
-            line.fillColor = SKColor(white: 0, alpha: 0.07)
+            line.fillColor = SKColor(white: 0, alpha: theme.scanlineAlpha)
             line.strokeColor = .clear
             line.zPosition = 90
             addChild(line)
@@ -157,7 +179,7 @@ class GameScene: SKScene {
         let totalH = CGFloat(gridRows) * cellSize + CGFloat(gridRows - 1) * cellGap
         boardOrigin = CGPoint(
             x: (size.width - totalW) / 2 + cellSize / 2,
-            y: (size.height - totalH) / 2 + cellSize / 2
+            y: (size.height - totalH) / 2 + cellSize / 2 + 10
         )
 
         boardContainer = SKNode()
@@ -165,8 +187,8 @@ class GameScene: SKScene {
 
         let backdrop = SKShapeNode(rectOf: CGSize(width: totalW + 16, height: totalH + 16), cornerRadius: 8)
         backdrop.position = CGPoint(x: size.width / 2, y: boardOrigin.y + totalH / 2 - cellSize / 2)
-        backdrop.fillColor = SKColor(red: 0.1, green: 0.08, blue: 0.18, alpha: 0.9)
-        backdrop.strokeColor = SKColor(red: 0.3, green: 0.25, blue: 0.5, alpha: 0.6)
+        backdrop.fillColor = theme.boardFill
+        backdrop.strokeColor = theme.boardStroke
         backdrop.lineWidth = 2
         backdrop.zPosition = -1
         boardContainer.addChild(backdrop)
@@ -181,9 +203,9 @@ class GameScene: SKScene {
                 tile.userData = NSMutableDictionary(dictionary: ["row": row, "col": col])
 
                 let border = SKShapeNode(rectOf: CGSize(width: cellSize, height: cellSize), cornerRadius: 4)
-                border.strokeColor = SKColor(white: 0.25, alpha: 0.4)
+                border.strokeColor = theme.emptyStroke
                 border.lineWidth = 1
-                border.fillColor = SKColor(white: 0.15, alpha: 0.2)
+                border.fillColor = theme.emptyFill
                 border.zPosition = -0.5
                 border.name = "border"
                 tile.addChild(border)
@@ -198,15 +220,12 @@ class GameScene: SKScene {
     private func setupHUD() {
         let totalH = CGFloat(gridRows) * cellSize + CGFloat(gridRows - 1) * cellGap
         let boardTop = boardOrigin.y + totalH - cellSize / 2
-        let boardBottom = boardOrigin.y - cellSize / 2
         let hudY = boardTop + 28
 
-        // Level label
         levelLabel = makeLabel(config.displayName, size: 14, color: SKColor(white: 0.5, alpha: 1))
         levelLabel.position = CGPoint(x: size.width / 2, y: hudY + 40)
         addChild(levelLabel)
 
-        // Score
         let scoreTitle = makeLabel("SCORE", size: 12, color: SKColor(white: 0.5, alpha: 1))
         scoreTitle.position = CGPoint(x: size.width / 2 - 65, y: hudY + 18)
         addChild(scoreTitle)
@@ -215,7 +234,6 @@ class GameScene: SKScene {
         scoreLabel.position = CGPoint(x: size.width / 2 - 65, y: hudY - 8)
         addChild(scoreLabel)
 
-        // Combo
         let comboTitle = makeLabel("COMBO", size: 12, color: SKColor(white: 0.5, alpha: 1))
         comboTitle.position = CGPoint(x: size.width / 2 + 65, y: hudY + 18)
         addChild(comboTitle)
@@ -224,47 +242,117 @@ class GameScene: SKScene {
         comboLabel.position = CGPoint(x: size.width / 2 + 65, y: hudY - 8)
         addChild(comboLabel)
 
-        // Timer centered
         timerLabel = makeLabel(formatTime(config.roundDuration), size: 20, color: .white)
         timerLabel.position = CGPoint(x: size.width / 2, y: hudY + 2)
         addChild(timerLabel)
 
-        // Lines target (level mode only)
         if !config.isEndless {
             linesLabel = makeLabel("0/\(config.linesToClear)", size: 14, color: SKColor(white: 0.6, alpha: 1))
             linesLabel.position = CGPoint(x: size.width / 2, y: hudY - 18)
             addChild(linesLabel)
         }
 
-        // Sweep button -- centered below board
-        let sweepY = boardBottom - 35
-        let btnContainer = SKNode()
-        btnContainer.position = CGPoint(x: size.width / 2, y: sweepY)
-        btnContainer.name = "sweepButton"
-        btnContainer.zPosition = 10
-        addChild(btnContainer)
-        sweepButton = btnContainer
+        // Coin counter
+        coinLabel = makeLabel("🪙 0", size: 13, color: SKColor(red: 1.0, green: 0.85, blue: 0.3, alpha: 0.7))
+        coinLabel.horizontalAlignmentMode = .right
+        coinLabel.position = CGPoint(x: size.width - 16, y: size.height - 36)
+        coinLabel.zPosition = 10
+        addChild(coinLabel)
 
-        let bg = SKShapeNode(rectOf: CGSize(width: 140, height: 44), cornerRadius: 6)
-        bg.fillColor = SKColor(red: 0.15, green: 0.55, blue: 0.65, alpha: 1)
-        bg.strokeColor = SKColor(red: 0.2, green: 0.8, blue: 0.9, alpha: 0.7)
-        bg.lineWidth = 2
-        bg.name = "sweepButton"
-        btnContainer.addChild(bg)
-
-        let btnLabel = makeLabel("SWEEP", size: 18, color: .white)
-        btnLabel.verticalAlignmentMode = .center
-        btnLabel.position = .zero
-        btnLabel.name = "sweepButton"
-        btnContainer.addChild(btnLabel)
-
-        // Back to menu button -- top left
+        // Back button
         let backBtn = makeLabel("< MENU", size: 16, color: SKColor(white: 0.5, alpha: 1))
         backBtn.horizontalAlignmentMode = .left
         backBtn.position = CGPoint(x: 16, y: size.height - 36)
         backBtn.zPosition = 10
         backBtn.name = "backButton"
         addChild(backBtn)
+    }
+
+    private func setupPowerUpBar() {
+        let boardBottom = boardOrigin.y - cellSize / 2
+        let barY = boardBottom - 35
+
+        powerUpBar = SKNode()
+        powerUpBar.zPosition = 10
+        addChild(powerUpBar)
+
+        // Sweep button (always available once per game)
+        let sweepNode = SKNode()
+        sweepNode.position = CGPoint(x: size.width / 2 - 80, y: barY)
+        sweepNode.name = "sweepButton"
+        powerUpBar.addChild(sweepNode)
+        sweepButton = sweepNode
+
+        let sweepBg = SKShapeNode(rectOf: CGSize(width: 70, height: 44), cornerRadius: 6)
+        sweepBg.fillColor = SKColor(red: 0.15, green: 0.55, blue: 0.65, alpha: 1)
+        sweepBg.strokeColor = SKColor(red: 0.2, green: 0.8, blue: 0.9, alpha: 0.7)
+        sweepBg.lineWidth = 2
+        sweepBg.name = "sweepButton"
+        sweepNode.addChild(sweepBg)
+
+        let sweepLabel = makeLabel("SWEEP", size: 12, color: .white)
+        sweepLabel.verticalAlignmentMode = .center
+        sweepLabel.position = .zero
+        sweepLabel.name = "sweepButton"
+        sweepNode.addChild(sweepLabel)
+
+        // Power-up slots
+        let slotTypes: [PowerUpType] = [.bomb, .colorBomb, .freeze, .shuffle]
+        let slotWidth: CGFloat = 48
+        let slotGap: CGFloat = 6
+        let totalSlotsWidth = CGFloat(slotTypes.count) * slotWidth + CGFloat(slotTypes.count - 1) * slotGap
+        let startX = size.width / 2 - totalSlotsWidth / 2 + slotWidth / 2 + 35
+
+        for (i, type) in slotTypes.enumerated() {
+            let x = startX + CGFloat(i) * (slotWidth + slotGap)
+            let count = PlayerData.shared.powerUpCount(for: type.rawValue)
+
+            let slot = SKNode()
+            slot.position = CGPoint(x: x, y: barY)
+            slot.name = "pu_\(type.rawValue)"
+            powerUpBar.addChild(slot)
+
+            let bg = SKShapeNode(rectOf: CGSize(width: slotWidth, height: 44), cornerRadius: 6)
+            bg.fillColor = count > 0
+                ? type.color.withAlphaComponent(0.3)
+                : SKColor(white: 0.15, alpha: 0.3)
+            bg.strokeColor = count > 0
+                ? type.color.withAlphaComponent(0.5)
+                : SKColor(white: 0.25, alpha: 0.3)
+            bg.lineWidth = 1.5
+            bg.name = "pu_\(type.rawValue)"
+            slot.addChild(bg)
+
+            let icon = makeLabel(type.icon, size: 18, color: .white)
+            icon.verticalAlignmentMode = .center
+            icon.position = CGPoint(x: 0, y: 3)
+            icon.name = "pu_\(type.rawValue)"
+            icon.alpha = count > 0 ? 1 : 0.3
+            slot.addChild(icon)
+
+            if count > 0 {
+                let badge = makeLabel("\(count)", size: 10, color: .white)
+                badge.position = CGPoint(x: slotWidth / 2 - 8, y: -14)
+                badge.zPosition = 12
+                badge.name = "pu_\(type.rawValue)"
+                slot.addChild(badge)
+            }
+        }
+
+        // Targeting prompt label (hidden by default)
+        let prompt = makeLabel("", size: 14, color: SKColor(red: 1.0, green: 0.5, blue: 0.2, alpha: 1))
+        prompt.position = CGPoint(x: size.width / 2, y: barY - 30)
+        prompt.name = "targetPrompt"
+        prompt.zPosition = 15
+        addChild(prompt)
+    }
+
+    private func refreshPowerUpBar() {
+        powerUpBar.removeAllChildren()
+        let temp = sweepButton  // re-created in setupPowerUpBar
+        _ = temp
+        children.filter { $0.name == "targetPrompt" }.forEach { $0.removeFromParent() }
+        setupPowerUpBar()
     }
 
     private func makeLabel(_ text: String, size: CGFloat, color: SKColor) -> SKLabelNode {
@@ -349,23 +437,23 @@ class GameScene: SKScene {
 
         switch board[row][col] {
         case .empty:
-            border?.fillColor = SKColor(white: 0.15, alpha: 0.2)
-            border?.strokeColor = SKColor(white: 0.25, alpha: 0.4)
+            border?.fillColor = theme.emptyFill
+            border?.strokeColor = theme.emptyStroke
 
         case .block(let color):
             let fill = SKShapeNode(rectOf: CGSize(width: cellSize - 4, height: cellSize - 4), cornerRadius: 4)
-            fill.fillColor = color.skColor
-            fill.strokeColor = color.glowColor
+            fill.fillColor = color.skColor(theme: theme)
+            fill.strokeColor = color.glowColor(theme: theme)
             fill.lineWidth = 2
             fill.zPosition = 1
             fill.name = "blockFill"
             tile.addChild(fill)
             border?.fillColor = .clear
-            border?.strokeColor = color.skColor.withAlphaComponent(0.3)
+            border?.strokeColor = color.skColor(theme: theme).withAlphaComponent(0.3)
 
         case .junk:
             let fill = SKShapeNode(rectOf: CGSize(width: cellSize - 4, height: cellSize - 4), cornerRadius: 4)
-            fill.fillColor = junkColor
+            fill.fillColor = theme.junkColor
             fill.strokeColor = SKColor(white: 0.4, alpha: 0.4)
             fill.lineWidth = 1.5
             fill.zPosition = 1
@@ -424,7 +512,6 @@ class GameScene: SKScene {
         let location = touch.location(in: self)
         let tapped = nodes(at: location)
 
-        // Handle pause overlay buttons
         if isShowingQuitPrompt {
             if tapped.contains(where: { $0.name == "quitConfirm" }) {
                 goToMenu()
@@ -434,31 +521,45 @@ class GameScene: SKScene {
             return
         }
 
-        // Game over buttons
         if isGameOver {
             handleEndScreenTouch(tapped)
             return
         }
 
-        // Back button
         if tapped.contains(where: { $0.name == "backButton" }) {
             showPauseOverlay()
             return
         }
 
-        // Sweep button
-        if tapped.contains(where: { $0.name == "sweepButton" }) {
-            if sweepAvailable {
-                if sweepSelecting {
-                    cancelSweepMode()
-                } else {
-                    sweepSelecting = true
-                    (sweepButton.children.first as? SKShapeNode)?.fillColor =
-                        SKColor(red: 0.9, green: 0.5, blue: 0.15, alpha: 1)
-                    if let lbl = sweepButton.children.compactMap({ $0 as? SKLabelNode }).first {
-                        lbl.text = "TAP ROW"
+        // Power-up button taps
+        for node in tapped {
+            guard let name = node.name else { continue }
+
+            if name == "sweepButton" {
+                if sweepAvailable {
+                    if sweepSelecting {
+                        cancelSweepMode()
+                    } else {
+                        cancelPowerUpMode()
+                        sweepSelecting = true
+                        updateSweepButtonVisual(active: true)
+                        removeSelection()
                     }
-                    removeSelection()
+                    return
+                }
+            }
+
+            if name.hasPrefix("pu_") {
+                let typeRaw = String(name.dropFirst(3))
+                guard let type = PowerUpType(rawValue: typeRaw) else { continue }
+                let count = PlayerData.shared.powerUpCount(for: type.rawValue)
+                guard count > 0 else { continue }
+
+                if activePowerUp == type {
+                    cancelPowerUpMode()
+                } else {
+                    cancelSweepMode()
+                    activatePowerUp(type)
                 }
                 return
             }
@@ -466,11 +567,19 @@ class GameScene: SKScene {
 
         guard let (row, col) = cellFromTouch(location) else {
             if sweepSelecting { cancelSweepMode() }
+            if activePowerUp != nil { cancelPowerUpMode() }
             return
         }
 
+        // Sweep targeting
         if sweepSelecting {
             performSweep(row: row)
+            return
+        }
+
+        // Power-up targeting
+        if let pu = activePowerUp {
+            executePowerUp(pu, row: row, col: col)
             return
         }
 
@@ -516,12 +625,24 @@ class GameScene: SKScene {
 
         let cleared = checkAndClearLines()
         if cleared > 0 {
-            score += cleared * 10 * combo
+            let points = cleared * 10 * combo
+            score += points
             combo += 1
+            if combo > maxCombo { maxCombo = combo }
             linesCleared += cleared
-            SoundManager.shared.play(.clear)
 
-            // Endless mode: ramp difficulty every 3 clears
+            let lineCoins = cleared * 5
+            coinsEarned += lineCoins
+
+            SoundManager.shared.play(.clear)
+            showComboText(combo: combo, at: positionFor(row: dst.row, col: dst.col))
+            spawnParticles(at: positionFor(row: dst.row, col: dst.col), color: theme.accentColor, count: cleared * 4)
+
+            if combo >= 3 {
+                SoundManager.shared.play(.bigCombo)
+                screenShake(intensity: CGFloat(min(combo, 6)) * 1.5)
+            }
+
             if config.isEndless, linesCleared % 3 == 0 {
                 endlessJunkChance = min(0.5, endlessJunkChance + 0.05)
             }
@@ -530,7 +651,6 @@ class GameScene: SKScene {
         }
         updateHUD()
 
-        // Check level completion before spawning
         if !config.isEndless && linesCleared >= config.linesToClear {
             endGame(completed: true)
             return
@@ -602,7 +722,7 @@ class GameScene: SKScene {
     private func animateClear(row: Int, col: Int, color: BlockColor) {
         let flash = SKShapeNode(rectOf: CGSize(width: cellSize, height: cellSize), cornerRadius: 4)
         flash.position = positionFor(row: row, col: col)
-        flash.fillColor = color.skColor
+        flash.fillColor = color.skColor(theme: theme)
         flash.strokeColor = .white
         flash.lineWidth = 2
         flash.zPosition = 20
@@ -657,13 +777,27 @@ class GameScene: SKScene {
 
     // MARK: - Sweep
 
+    private func updateSweepButtonVisual(active: Bool) {
+        if active {
+            (sweepButton.children.first as? SKShapeNode)?.fillColor =
+                SKColor(red: 0.9, green: 0.5, blue: 0.15, alpha: 1)
+            if let lbl = sweepButton.children.compactMap({ $0 as? SKLabelNode }).first {
+                lbl.text = "TAP ROW"
+                lbl.fontSize = 10
+            }
+        } else {
+            (sweepButton.children.first as? SKShapeNode)?.fillColor =
+                SKColor(red: 0.15, green: 0.55, blue: 0.65, alpha: 1)
+            if let lbl = sweepButton.children.compactMap({ $0 as? SKLabelNode }).first {
+                lbl.text = "SWEEP"
+                lbl.fontSize = 12
+            }
+        }
+    }
+
     private func cancelSweepMode() {
         sweepSelecting = false
-        (sweepButton.children.first as? SKShapeNode)?.fillColor =
-            SKColor(red: 0.15, green: 0.55, blue: 0.65, alpha: 1)
-        if let lbl = sweepButton.children.compactMap({ $0 as? SKLabelNode }).first {
-            lbl.text = "SWEEP"
-        }
+        updateSweepButtonVisual(active: false)
     }
 
     private func performSweep(row: Int) {
@@ -684,15 +818,20 @@ class GameScene: SKScene {
 
         score += 6 * combo
         combo += 1
+        if combo > maxCombo { maxCombo = combo }
         linesCleared += 1
+        coinsEarned += 5
         refreshAllTiles()
         updateHUD()
+        screenShake(intensity: 3)
+        spawnParticles(at: CGPoint(x: size.width / 2, y: positionFor(row: row, col: 0).y), color: .cyan, count: 12)
 
         sweepSelecting = false
         sweepAvailable = false
         (sweepButton.children.first as? SKShapeNode)?.fillColor = SKColor(white: 0.3, alpha: 0.6)
         if let lbl = sweepButton.children.compactMap({ $0 as? SKLabelNode }).first {
             lbl.text = "USED"
+            lbl.fontSize = 12
             lbl.fontColor = SKColor(white: 0.5, alpha: 1)
         }
 
@@ -701,11 +840,319 @@ class GameScene: SKScene {
         }
     }
 
+    // MARK: - Power-Ups
+
+    private func activatePowerUp(_ type: PowerUpType) {
+        activePowerUp = type
+        removeSelection()
+
+        if type.needsTarget {
+            if let prompt = childNode(withName: "targetPrompt") as? SKLabelNode {
+                prompt.text = type.targetingPrompt
+            }
+        } else {
+            executePowerUp(type, row: 0, col: 0)
+        }
+    }
+
+    private func cancelPowerUpMode() {
+        activePowerUp = nil
+        if let prompt = childNode(withName: "targetPrompt") as? SKLabelNode {
+            prompt.text = ""
+        }
+    }
+
+    private func executePowerUp(_ type: PowerUpType, row: Int, col: Int) {
+        // Validate target before consuming
+        if type == .colorBomb {
+            guard case .block = board[row][col] else { return }
+        }
+
+        guard PlayerData.shared.consumePowerUp(type.rawValue) else {
+            cancelPowerUpMode()
+            return
+        }
+
+        SoundManager.shared.play(.powerUp)
+        cancelPowerUpMode()
+
+        switch type {
+        case .bomb:
+            executeBomb(row: row, col: col)
+        case .colorBomb:
+            executeColorBomb(row: row, col: col)
+        case .freeze:
+            executeFreeze()
+        case .shuffle:
+            executeShuffle()
+        }
+
+        refreshPowerUpBar()
+        updateHUD()
+    }
+
+    private func executeBomb(row: Int, col: Int) {
+        SoundManager.shared.play(.bomb)
+        screenShake(intensity: 6)
+
+        for dr in -1...1 {
+            for dc in -1...1 {
+                let r = row + dr
+                let c = col + dc
+                guard r >= 0, r < gridRows, c >= 0, c < gridCols else { continue }
+
+                let flash = SKShapeNode(rectOf: CGSize(width: cellSize, height: cellSize), cornerRadius: 4)
+                flash.position = positionFor(row: r, col: c)
+                flash.fillColor = SKColor(red: 1.0, green: 0.4, blue: 0.1, alpha: 0.9)
+                flash.strokeColor = .white
+                flash.zPosition = 20
+                boardContainer.addChild(flash)
+                flash.run(SKAction.sequence([
+                    SKAction.group([
+                        SKAction.fadeOut(withDuration: 0.4),
+                        SKAction.scale(to: 1.8, duration: 0.4)
+                    ]),
+                    SKAction.removeFromParent()
+                ]))
+
+                board[r][c] = .empty
+            }
+        }
+
+        spawnParticles(at: positionFor(row: row, col: col), color: SKColor(red: 1, green: 0.5, blue: 0.1, alpha: 1), count: 20)
+        refreshAllTiles()
+
+        let cleared = checkAndClearLines()
+        if cleared > 0 {
+            score += cleared * 10 * combo
+            combo += 1
+            linesCleared += cleared
+            coinsEarned += cleared * 5
+        }
+        updateHUD()
+        checkLevelCompletion()
+    }
+
+    private func executeColorBomb(row: Int, col: Int) {
+        guard case .block(let targetColor) = board[row][col] else { return }
+
+        SoundManager.shared.play(.bomb)
+        screenShake(intensity: 4)
+
+        var removed = 0
+        for r in 0..<gridRows {
+            for c in 0..<gridCols {
+                if case .block(let color) = board[r][c], color == targetColor {
+                    let flash = SKShapeNode(rectOf: CGSize(width: cellSize, height: cellSize), cornerRadius: 4)
+                    flash.position = positionFor(row: r, col: c)
+                    flash.fillColor = targetColor.skColor(theme: theme)
+                    flash.strokeColor = .white
+                    flash.zPosition = 20
+                    boardContainer.addChild(flash)
+                    flash.run(SKAction.sequence([
+                        SKAction.group([
+                            SKAction.fadeOut(withDuration: 0.4),
+                            SKAction.scale(to: 1.6, duration: 0.4)
+                        ]),
+                        SKAction.removeFromParent()
+                    ]))
+
+                    board[r][c] = .empty
+                    removed += 1
+                }
+            }
+        }
+
+        spawnParticles(at: positionFor(row: row, col: col), color: targetColor.skColor(theme: theme), count: removed * 2)
+        score += removed * 5
+        coinsEarned += removed
+        refreshAllTiles()
+
+        let cleared = checkAndClearLines()
+        if cleared > 0 {
+            score += cleared * 10 * combo
+            combo += 1
+            linesCleared += cleared
+            coinsEarned += cleared * 5
+        }
+        updateHUD()
+        checkLevelCompletion()
+    }
+
+    private func executeFreeze() {
+        SoundManager.shared.play(.freeze)
+        isFrozen = true
+        freezeTimeLeft = 15
+
+        let overlay = SKShapeNode(rectOf: size)
+        overlay.position = CGPoint(x: size.width / 2, y: size.height / 2)
+        overlay.fillColor = SKColor(red: 0.2, green: 0.5, blue: 1.0, alpha: 0.08)
+        overlay.strokeColor = .clear
+        overlay.zPosition = 40
+        overlay.name = "freezeOverlay"
+        addChild(overlay)
+        freezeOverlay = overlay
+
+        overlay.run(SKAction.repeatForever(
+            SKAction.sequence([
+                SKAction.fadeAlpha(to: 0.03, duration: 1.0),
+                SKAction.fadeAlpha(to: 0.08, duration: 1.0)
+            ])
+        ))
+    }
+
+    private func endFreeze() {
+        isFrozen = false
+        freezeTimeLeft = 0
+        freezeOverlay?.removeFromParent()
+        freezeOverlay = nil
+    }
+
+    private func executeShuffle() {
+        SoundManager.shared.play(.powerUp)
+        screenShake(intensity: 3)
+
+        var blocks: [Cell] = []
+        var positions: [(Int, Int)] = []
+
+        for r in 0..<gridRows {
+            for c in 0..<gridCols {
+                if case .block = board[r][c] {
+                    blocks.append(board[r][c])
+                    positions.append((r, c))
+                    board[r][c] = .empty
+                }
+            }
+        }
+
+        blocks.shuffle()
+        for (i, pos) in positions.enumerated() {
+            board[pos.0][pos.1] = blocks[i]
+        }
+
+        refreshAllTiles()
+        for pos in positions {
+            animateSpawn(row: pos.0, col: pos.1)
+        }
+
+        let cleared = checkAndClearLines()
+        if cleared > 0 {
+            score += cleared * 10 * combo
+            combo += 1
+            linesCleared += cleared
+            coinsEarned += cleared * 5
+        }
+        updateHUD()
+        checkLevelCompletion()
+    }
+
+    private func checkLevelCompletion() {
+        if !config.isEndless && linesCleared >= config.linesToClear {
+            endGame(completed: true)
+        }
+    }
+
+    // MARK: - Visual Effects
+
+    private func showComboText(combo: Int, at position: CGPoint) {
+        guard combo >= 2 else { return }
+
+        let texts = ["NICE!", "GREAT!", "AMAZING!", "INCREDIBLE!", "GODLIKE!"]
+        let colors: [SKColor] = [
+            SKColor(red: 0.3, green: 0.9, blue: 0.5, alpha: 1),
+            SKColor(red: 0.3, green: 0.9, blue: 1.0, alpha: 1),
+            SKColor(red: 1.0, green: 0.85, blue: 0.3, alpha: 1),
+            SKColor(red: 1.0, green: 0.5, blue: 0.2, alpha: 1),
+            SKColor(red: 1.0, green: 0.2, blue: 0.5, alpha: 1),
+        ]
+
+        let idx = min(combo - 2, texts.count - 1)
+        let label = makeLabel(texts[idx], size: CGFloat(20 + min(combo, 5) * 2), color: colors[idx])
+        label.position = CGPoint(x: position.x, y: position.y + 30)
+        label.zPosition = 30
+        label.alpha = 0
+        boardContainer.addChild(label)
+
+        label.run(SKAction.sequence([
+            SKAction.group([
+                SKAction.fadeIn(withDuration: 0.1),
+                SKAction.moveBy(x: 0, y: 40, duration: 0.8),
+                SKAction.sequence([
+                    SKAction.scale(to: 1.3, duration: 0.15),
+                    SKAction.scale(to: 1.0, duration: 0.65)
+                ])
+            ]),
+            SKAction.fadeOut(withDuration: 0.2),
+            SKAction.removeFromParent()
+        ]))
+
+        // Coin popup for combos
+        if combo >= 3 {
+            let bonusCoins = (combo - 2) * 3
+            coinsEarned += bonusCoins
+            showCoinPopup("+\(bonusCoins)", at: CGPoint(x: position.x + 30, y: position.y + 50))
+        }
+    }
+
+    private func spawnParticles(at position: CGPoint, color: SKColor, count: Int) {
+        for _ in 0..<count {
+            let particle = SKShapeNode(circleOfRadius: CGFloat.random(in: 2...5))
+            particle.fillColor = color
+            particle.strokeColor = .clear
+            particle.position = position
+            particle.zPosition = 25
+            particle.alpha = 0.9
+            boardContainer.addChild(particle)
+
+            let dx = CGFloat.random(in: -60...60)
+            let dy = CGFloat.random(in: -60...60)
+            let duration = Double.random(in: 0.3...0.7)
+
+            particle.run(SKAction.sequence([
+                SKAction.group([
+                    SKAction.moveBy(x: dx, y: dy, duration: duration),
+                    SKAction.fadeOut(withDuration: duration),
+                    SKAction.scale(to: 0.1, duration: duration)
+                ]),
+                SKAction.removeFromParent()
+            ]))
+        }
+    }
+
+    private func screenShake(intensity: CGFloat) {
+        let count = 4
+        var actions: [SKAction] = []
+        for _ in 0..<count {
+            let dx = CGFloat.random(in: -intensity...intensity)
+            let dy = CGFloat.random(in: -intensity...intensity)
+            actions.append(SKAction.moveBy(x: dx, y: dy, duration: 0.03))
+        }
+        actions.append(SKAction.move(to: .zero, duration: 0.03))
+        boardContainer.run(SKAction.sequence(actions))
+    }
+
+    private func showCoinPopup(_ text: String, at position: CGPoint) {
+        let label = makeLabel(text, size: 14, color: SKColor(red: 1.0, green: 0.85, blue: 0.3, alpha: 1))
+        label.position = position
+        label.zPosition = 35
+        label.alpha = 0
+        boardContainer.addChild(label)
+        label.run(SKAction.sequence([
+            SKAction.group([
+                SKAction.fadeIn(withDuration: 0.1),
+                SKAction.moveBy(x: 0, y: 30, duration: 0.6)
+            ]),
+            SKAction.fadeOut(withDuration: 0.2),
+            SKAction.removeFromParent()
+        ]))
+    }
+
     // MARK: - HUD
 
     private func updateHUD() {
         scoreLabel.text = "\(score)"
         comboLabel.text = "x\(combo)"
+        coinLabel.text = "🪙 \(coinsEarned)"
         if !config.isEndless {
             linesLabel?.text = "\(linesCleared)/\(config.linesToClear)"
         }
@@ -811,9 +1258,31 @@ class GameScene: SKScene {
         guard !isGameOver else { return }
         isGameOver = true
 
+        if isFrozen { endFreeze() }
+
+        // Record stats and award coins (coinsEarned already includes per-line coins)
+        var endBonus = 0
+        if completed && !config.isEndless {
+            endBonus += 20
+            let starBonus = config.starsFor(score: score)
+            if starBonus == 3 { endBonus += 30 }
+            else if starBonus == 2 { endBonus += 15 }
+        }
+        if config.isEndless { endBonus += score / 20 }
+
+        let finalCoins = coinsEarned + endBonus
+        PlayerData.shared.addCoins(finalCoins)
+        PlayerData.shared.totalCoinsEarned += finalCoins
+        PlayerData.shared.recordGameEnd(score: score, lines: linesCleared, combo: maxCombo, level: config.level)
+
+        var earnedStars = 0
         if completed {
             SoundManager.shared.play(.levelComplete)
-            if !config.isEndless { LevelConfig.unlockNext(after: config.level) }
+            if !config.isEndless {
+                LevelConfig.unlockNext(after: config.level)
+                earnedStars = config.starsFor(score: score)
+                PlayerData.shared.updateStarRating(earnedStars, for: config.level)
+            }
         } else {
             SoundManager.shared.play(.gameOver)
         }
@@ -826,8 +1295,8 @@ class GameScene: SKScene {
         overlay.zPosition = 80
         addChild(overlay)
 
-        let cardHeight: CGFloat = completed && !config.isEndless ? 300 : 280
-        let card = SKShapeNode(rectOf: CGSize(width: 260, height: cardHeight), cornerRadius: 12)
+        let cardHeight: CGFloat = completed && !config.isEndless ? 380 : 340
+        let card = SKShapeNode(rectOf: CGSize(width: 280, height: cardHeight), cornerRadius: 12)
         card.position = CGPoint(x: size.width / 2, y: size.height / 2 + 20)
         card.fillColor = SKColor(red: 0.12, green: 0.1, blue: 0.22, alpha: 1)
         card.strokeColor = SKColor(red: 0.5, green: 0.4, blue: 0.8, alpha: 0.7)
@@ -836,43 +1305,91 @@ class GameScene: SKScene {
         card.name = "endCard"
         addChild(card)
 
+        // Heading
         let heading = completed ? "LEVEL CLEAR!" : "GAME OVER"
         let headingColor = completed
             ? SKColor(red: 0.35, green: 0.9, blue: 0.5, alpha: 1)
             : SKColor(red: 0.95, green: 0.3, blue: 0.35, alpha: 1)
         let headLabel = makeLabel(heading, size: 26, color: headingColor)
-        headLabel.position = CGPoint(x: 0, y: 90)
+        headLabel.position = CGPoint(x: 0, y: cardHeight / 2 - 40)
         headLabel.zPosition = 86
         card.addChild(headLabel)
 
-        let finalScore = makeLabel("SCORE: \(score)", size: 28, color: SKColor(red: 1.0, green: 0.85, blue: 0.3, alpha: 1))
-        finalScore.position = CGPoint(x: 0, y: 40)
+        // Stars (level mode, completed)
+        if completed && !config.isEndless {
+            let starY = cardHeight / 2 - 75
+            let starSpacing: CGFloat = 40
+            for i in 0..<3 {
+                let starLabel = makeLabel(i < earnedStars ? "★" : "☆", size: 32,
+                                         color: i < earnedStars ? SKColor(red: 1.0, green: 0.85, blue: 0.3, alpha: 1) : SKColor(white: 0.3, alpha: 0.5))
+                starLabel.position = CGPoint(x: CGFloat(i - 1) * starSpacing, y: starY)
+                starLabel.zPosition = 86
+                card.addChild(starLabel)
+
+                if i < earnedStars {
+                    starLabel.setScale(0.1)
+                    starLabel.run(SKAction.sequence([
+                        SKAction.wait(forDuration: Double(i) * 0.3),
+                        SKAction.group([
+                            SKAction.scale(to: 1.0, duration: 0.3),
+                            SKAction.run { SoundManager.shared.play(.star) }
+                        ])
+                    ]))
+                }
+            }
+        }
+
+        // Score
+        let scoreY: CGFloat = completed && !config.isEndless ? cardHeight / 2 - 110 : cardHeight / 2 - 75
+        let finalScore = makeLabel("SCORE: \(score)", size: 24, color: SKColor(red: 1.0, green: 0.85, blue: 0.3, alpha: 1))
+        finalScore.position = CGPoint(x: 0, y: scoreY)
         finalScore.zPosition = 86
         card.addChild(finalScore)
 
+        // Coins earned
+        let coinText = makeLabel("🪙 +\(finalCoins)", size: 18, color: SKColor(red: 1.0, green: 0.85, blue: 0.3, alpha: 0.8))
+        coinText.position = CGPoint(x: 0, y: scoreY - 32)
+        coinText.zPosition = 86
+        card.addChild(coinText)
+
+        // Lines / combo stats
+        let statsY = scoreY - 60
+        let statsText = makeLabel("LINES: \(linesCleared)  COMBO: x\(maxCombo)", size: 13, color: SKColor(white: 0.5, alpha: 1))
+        statsText.position = CGPoint(x: 0, y: statsY)
+        statsText.zPosition = 86
+        card.addChild(statsText)
+
         // Buttons
-        var btnY: CGFloat = -10
+        var btnY: CGFloat = statsY - 40
 
         if completed && !config.isEndless && config.level < LevelConfig.levels.count {
             addEndButton(to: card, text: "NEXT LEVEL", name: "nextLevel", y: btnY,
                          fillColor: SKColor(red: 0.2, green: 0.7, blue: 0.35, alpha: 1),
                          strokeColor: SKColor(red: 0.3, green: 0.9, blue: 0.5, alpha: 0.7))
-            btnY -= 55
+            btnY -= 50
         }
 
         addEndButton(to: card, text: "RETRY", name: "retry", y: btnY,
                      fillColor: SKColor(red: 0.85, green: 0.25, blue: 0.3, alpha: 1),
                      strokeColor: SKColor(red: 1.0, green: 0.4, blue: 0.4, alpha: 0.7))
-        btnY -= 55
+        btnY -= 50
 
         addEndButton(to: card, text: "MENU", name: "menu", y: btnY,
                      fillColor: SKColor(red: 0.2, green: 0.18, blue: 0.35, alpha: 1),
                      strokeColor: SKColor(white: 0.4, alpha: 0.6))
+
+        // Animate card entrance
+        card.setScale(0.5)
+        card.alpha = 0
+        card.run(SKAction.group([
+            SKAction.scale(to: 1.0, duration: 0.35),
+            SKAction.fadeIn(withDuration: 0.25)
+        ]))
     }
 
     private func addEndButton(to parent: SKNode, text: String, name: String, y: CGFloat,
                               fillColor: SKColor, strokeColor: SKColor) {
-        let bg = SKShapeNode(rectOf: CGSize(width: 160, height: 44), cornerRadius: 6)
+        let bg = SKShapeNode(rectOf: CGSize(width: 180, height: 42), cornerRadius: 6)
         bg.position = CGPoint(x: 0, y: y)
         bg.fillColor = fillColor
         bg.strokeColor = strokeColor
@@ -881,7 +1398,7 @@ class GameScene: SKScene {
         bg.name = name
         parent.addChild(bg)
 
-        let label = makeLabel(text, size: 18, color: .white)
+        let label = makeLabel(text, size: 16, color: .white)
         label.verticalAlignmentMode = .center
         label.position = CGPoint(x: 0, y: y)
         label.zPosition = 87
@@ -891,6 +1408,7 @@ class GameScene: SKScene {
 
     private func handleEndScreenTouch(_ tapped: [SKNode]) {
         if tapped.contains(where: { $0.name == "nextLevel" }) {
+            SoundManager.shared.play(.select)
             let nextConfig = LevelConfig.forLevel(config.level + 1)
             let game = GameScene(size: size, config: nextConfig)
             game.scaleMode = scaleMode
@@ -898,6 +1416,7 @@ class GameScene: SKScene {
             return
         }
         if tapped.contains(where: { $0.name == "retry" }) {
+            SoundManager.shared.play(.select)
             let game = GameScene(size: size, config: config)
             game.scaleMode = scaleMode
             view?.presentScene(game, transition: SKTransition.fade(withDuration: 0.4))
